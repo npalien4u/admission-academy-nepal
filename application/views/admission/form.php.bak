@@ -1,0 +1,53 @@
+
+<!--begin::Portlet-->
+<div class="kt-portlet kt-portlet--last kt-portlet--head-lg kt-portlet--responsive-mobile" id="kt_page_portlet">
+	<form class="kt-form" id="kt_form_1" method="post" action="<?=base_url("AdmissionForm/sumbit")?>" enctype="multipart/form-data" data-validate-user="<?=base_url("AdmissionForm/CheckUsername")?>">	
+		<div class="kt-portlet__head kt-portlet__head--lg">
+			<div class="kt-portlet__head-label">
+				<h3 class="kt-portlet__head-title">
+				<?=@$consent_text->form_title?$consent_text->form_title:"Online Admission From"; ?>
+				 </h3>
+			</div>		
+		</div>
+		
+		<div class="kt-portlet__body">											
+			
+			<div class="row">
+				
+				<div class="col-12 col-md-10 col-xl-8 offset-md-1 offset-xl-2">
+					
+
+							<?php 
+								foreach($sections as $section){
+									if($section!=null){
+										$viewfile = realpath(VIEWPATH."admission/form-sections/{$section}.php");								
+
+										if(file_exists( $viewfile) ){
+										   echo $this->load->view("admission/form-sections/$section",null, true);
+									   }else{										   
+										   echo "undefined section: $section";
+									   }
+									}else{
+										echo "undefined section";
+									}							
+									
+								}
+							?>
+
+
+				
+				</div>
+				
+			</div>
+		</div>
+
+		<div class="kt-portlet__foot">
+			<div class="kt-form__actions kt-form__actions--center">
+				<input type="text" name ="sec_code" id="sec_code" >
+				<button type="submit" class="btn btn-brand">Submit</button>
+				<button type="reset" class="btn btn-secondary">Cancel</button>
+			</div>
+		</div>	
+	</form>
+</div>
+<!--end::Portlet-->

@@ -1,0 +1,418 @@
+<?php defined('BASEPATH') or exit('No direct script access allowed');
+
+class Admin extends Admin_Controller
+{
+
+    public $status = array("Active", "Archived", "Trashed");
+
+    public function __construct()
+    {
+        parent::__construct();
+        $this->load->library("pagination");
+        //$this->session->userdata("tenant")->id=1;
+        $this->load->model("AdminModel");
+        $this->load->model("ApplicantsModel");
+        $this->load->model("AcademicRecords");
+        $this->load->model("Relatives");
+        $this->load->model("ContactDetail");
+    }
+
+    private function init_pagination($base_url, $total_rows, $page_size = 10)
+    {
+        $config["base_url"] = $base_url;
+        $config["total_rows"] = $total_rows;
+        $config["per_page"] = $page_size;
+        $this->pagination->initialize($config);
+    }
+
+    public function index()
+    {
+        $data["child_view"] = "admin/login";
+        $this->load->view('admin/login', $data);
+    }
+
+    public function login()
+    {
+        $data["login_name"] = $this->input->post("email");
+        $data["password"] = $this->input->post("password");
+        $data["id"] = $this->session->userdata("tenant")->id;
+
+        $result = $this->AdminModel->Authenticate($data);
+        if ($result) {
+            $session_data["user"] = (array) $result[0];
+            $this->session->set_userdata($session_data);
+            $this->session->set_userdata("logged_in", true);
+            $this->session->set_userdata("usertype", "admin");
+            redirect(base_url("admin/applicants"));
+            exit;
+        }
+        redirect("/admin/");
+    }
+
+    public function logout()
+    {
+        $this->session->sess_destroy();
+        redirect(base_url("/admin/"));
+    }
+
+    public function dashboard()
+    {
+        $this->check_login();
+        $this->applicants(1);
+    }
+
+    public function settings()
+    {
+        $this->check_login();
+        $section = "profile";
+        $show_success = false;
+
+        if ($this->input->post()) {
+            $section = $this->input->post("section");
+
+            switch ($section) {
+                case "profile":
+                    $upload_config['upload_path'] = './uploads/tenants/';
+                    $upload_config['allowed_types'] = 'gif|jpg|jpeg|jpe|jpg2|png|pdf|doc|docx';
+                    $upload_config['file_ext_tolower'] = true;
+                    $upload_config['encrypt_name'] = true;
+                    $upload_config['detect_mime'] = false;
+                    $this->upload->initialize($upload_config);
+                    $data["logo"] = $this->upload->do_upload("logo") ? $this->upload->data("file_name") : $this->input->post("logo_old");
+                    $data["name"] = $this->input->post("name");
+                    $data["address"] = $this->input->post("address");
+                    $data["phone"] = $this->input->post("phone");
+                    $data["email"] = $this->input->post("email");
+                    $data["website"] = $this->input->post("website");
+
+                    $this->AdminModel->UpdateProfile($data);
+                    $show_success = true;
+                    break;
+
+                case "login":
+                    $password = $this->input->post("password");
+                    $confirm_pasword = $this->input->post("confrim_password");
+                    if ($password) {
+                        if ($confirm_pasword == $password) {
+                            $password = md5($password);
+                            $data["password"] = $password;
+
+                            $this->AdminModel->UpdateProfile($data);
+                            $show_success = true;
+                        }
+                    }
+                    break;
+            }
+
+        }
+
+        $data = $this->AdminModel->InstitutionProfile($this->session->userdata("tenant")->id);
+        $view_data["section"] = $section;
+        $view_data["child_view"] = "admin/settings";
+        $view_data["view_title"] = "System Settings";
+        $view_data["tenant"] = $data;
+        $view_data["show_success"] = $show_success;
+        $this->load->view('template/layout', $view_data);
+    }
+
+    public function applicant($action, $id)
+    {
+        $this->check_login();
+        $action = strtolower($action);
+        $data = new stdClass();
+        $child_view = "";
+
+        switch ($action) {
+            case "edit":
+            case "view":
+
+                if ($this->input->post()) {
+                    $this->update_applicant();
+                }
+                $query = $this->ApplicantsModel->get_where(array("id" => $id, "institution_id" => $this->session->userdata("tenant")->id));
+                if (sizeof($query) == 0) {
+                    $child_view = "errors/html/error_general";
+                    $view_data["heading"] = "Access denied";
+                    $view_data["message"] = "The record you are looking for eithe doesn't exist or you do not have permission to access the record.";
+                } else {
+                    $applicant = $query[0];
+                    $data->applicant_info = $applicant;
+                    $data->parent_info = $this->Relatives->get_where(array("application_id" => $applicant->id));
+                    $data->academic_record = $this->AcademicRecords->get_where(array("application_id" => $applicant->id));
+                    $data->contact_detail = $this->ContactDetail->get_where(array("application_id" => $applicant->id));
+                    $data->enable_edit = $action == "edit";
+                    $open_grades_list = $this->db->get_where("admission_open_grades", array("institution_id" => ($this->session->userdata("tenant"))->id))->row();
+                    $this->db->where_in("id", explode(",", $open_grades_list->open_grades_id));
+                    $open_grades = $this->db->get("grades_list")->result();
+                    $data->open_grades = $open_grades;
+
+                    $form_sections_list = $this->db->get_where("form_sections", array("institution_id" => ($this->session->userdata("tenant"))->id))->row();
+                    $form_sections = array_map("trim", explode(",", $form_sections_list->sections));
+                    $consent_text = $this->db->get_where("consent_text", array("institution_id" => $this->session->userdata("tenant")->id))->row();
+
+                    $view_data["sections"] = $form_sections;
+                    $view_data["consent_text"] = $consent_text;
+                    $child_view = "admin/edit_form";
+                }
+
+                break;
+
+            case "activate":
+                $action_result = $this->update_status($id, 1);
+                echo json_encode($action_result);
+                exit;
+                break;
+            case "archive":
+                $action_result = $this->update_status($id, 2);
+                echo json_encode($action_result);
+                exit;
+                break;
+            case "trash":
+                $action_result = $this->update_status($id, 3);
+                echo json_encode($action_result);
+                exit;
+                break;
+            case "purge":
+                $action_result = $this->delete_records($id);
+                echo json_encode($action_result);
+                exit;
+                break;
+        }
+
+        //echo json_encode($data);
+        $view_data["child_view"] = $child_view;
+        $view_data["view_title"] = "Application form";
+        $view_data["application"] = $data;
+        $this->load->view('template/layout', $view_data);
+    }
+
+    public function applicants($status = 1, $page = 1)
+    {
+        $this->check_login();
+        $page_size = $this->config->item("per_page"); //$this->input->post("length");
+        $offset = ($page - 1) * $page_size;
+
+        $this->db->limit($page_size, $offset);
+        $result = $this->db->select("SQL_CALC_FOUND_ROWS *", false)
+            ->from("applications")
+            ->where(array("institution_id" => $this->session->userdata("tenant")->id, "status" => $status))
+            ->order_by("id", "desc")
+
+            ->get()->result();
+        $num_rows = $this->db->query("SELECT FOUND_ROWS() as count")->row();
+
+        $base_url = base_url("admin/applicants");
+        $this->init_pagination(base_url("admin/applicants/$status/"), $num_rows->count, $page_size);
+
+        $data["child_view"] = "admin/dashboard";
+        $data["view_title"] = $this->status[$status - 1] . " Applicants list";
+        $data["applicants"] = $result;
+        $data["offset"] = $offset;
+        $data["links"] = $this->pagination->create_links();
+        $this->load->view('template/layout', $data);
+    }
+
+    private function update_applicant()
+    {
+        $application_id = $this->input->post("id");
+        $institution_id = $this->session->userdata("tenant")->id;
+
+        $form_sections_list = $this->db->get_where("form_sections", array("institution_id" => $institution_id))->row();
+        $form_sections = array_map("trim", explode(",", $form_sections_list->sections));
+
+        //create application
+        if (in_array("student-info", $form_sections)) {
+            $applicant["first_name"] = $this->input->post("first_name");
+            $applicant["middle_name"] = $this->input->post("middle_name");
+            $applicant["last_name"] = $this->input->post("last_name");
+
+            $dob_ad = sprintf("%s-%s-%s", $this->input->post("dob_year_ad"), $this->input->post("dob_month_ad"), $this->input->post("dob_date_ad"));
+            $applicant["dob_ad"] = $dob_ad;
+
+            $dob_bs = sprintf("%s-%s-%s", $this->input->post("dob_year_bs"), $this->input->post("dob_month_bs"), $this->input->post("dob_date_bs"));
+            $applicant["dob_bs"] = $dob_bs;
+            $applicant["gender"] = $this->input->post("gender");
+        }
+
+        if (in_array("seek-admission", $form_sections)) {
+            $applicant["admission_grade"] = $this->input->post("admission_grade");
+            $applicant["admission_type"] = $this->input->post("admission_type");
+            $applicant["admission_session"] = $this->input->post("admission_session");
+        }
+
+        if (in_array("umc/seek-admission", $form_sections)) {
+            $applicant["admission_grade"] = $this->input->post("admission_grade");
+            $applicant["admission_session"] = date("Y");
+        }
+
+        if (in_array("mbss/seek-admission", $form_sections)) {
+            $applicant["admission_grade"] = $this->input->post("admission_grade");
+            $applicant["faculty"] = $this->input->post("admission_faculty");
+            $applicant["admission_session"] = date("Y");
+            $applicant["elective_subject"] = $this->input->post("elective_subject");
+        }
+
+        if (in_array("class-shift", $form_sections)) {
+            $applicant["class_shift"] = $this->input->post("class_shift");
+        }
+
+        if (in_array("previous-school", $form_sections)) {
+            $applicant["previous_school_name"] = $this->input->post("previous_school_name");
+            $applicant["previous_school_address"] = $this->input->post("previous_school_address");
+            $applicant["previous_school_phone"] = $this->input->post("previous_school_phone");
+        }
+
+        if (in_array("umc/previous-school", $form_sections) || in_array("mbss/previous-school", $form_sections)) {
+            $applicant["previous_school_name"] = $this->input->post("previous_school_name");
+            $applicant["previous_school_address"] = $this->input->post("previous_school_address");
+            $applicant["previous_school_phone"] = $this->input->post("previous_school_phone");
+
+		}
+		
+        if (in_array("umc/hobbies-interests", $form_sections)) {
+            $applicant["hobbies"] = $this->input->post("hobbies");
+            $applicant["interests"] = $this->input->post("interests");
+        }
+
+        if (in_array("extra-curricular-activities", $form_sections)) {
+            $applicant["interests"] = $this->input->post("interests");
+        }
+
+        if (in_array("mbss/extra-curricular-activities", $form_sections)) {
+            $applicant["interests"] = $this->input->post("interests");
+            $applicant["take_eca_class"] = $this->input->post("take_eca_class");
+        }
+
+        if (in_array("nationality-ethnicity", $form_sections)) {
+            $applicant["nationality"] = $this->input->post("nationality");
+            $applicant["mother_tongue"] = $this->input->post("mother_tongue");
+        }
+
+        if (in_array("transportation", $form_sections)) {
+            $applicant["need_transporation"] = $this->input->post("need_transportation");
+            $applicant["bus_stop_pick"] = $this->input->post("bus_stop_pick");
+            $applicant["bus_stop_drop"] = $this->input->post("bus_stop_drop");
+        }
+
+        if (in_array("document-uploads", $form_sections)) {
+            $documents = array();
+            if ($this->upload->do_upload("birth_certificate")) {
+                $documents["birth_certificate"] = $this->upload->data("file_name");
+                @unlink($this->upload->data("file_path") . "/" . $this->input->post("birth_certificate_old"));
+            } else {
+                $documents["birth_certificate"] = $this->input->post("birth_certificate_old");
+            }
+
+            if ($this->upload->do_upload("transfer_certificate")) {
+                $documents["transfer_certificate"] = $this->upload->data("file_name");
+                @unlink($this->upload->data("file_path") . "/" . $this->input->post("transfer_certificate_old"));
+            } else {
+                $documents["transfer_certificate"] = $this->input->post("transfer_certificate_old");
+            }
+
+            if ($this->upload->do_upload("last_marksheet")) {
+                $documents["last_marksheet"] = $this->upload->data("file_name");
+                @unlink($this->upload->data("file_path") . "/" . $this->input->post("last_marksheet_old"));
+            } else {
+                $documents["last_marksheet"] = $this->input->post("last_marksheet_old");
+            }
+
+            $enc_documents = json_encode($documents);
+            $applicant["documents"] = $enc_documents;
+
+            if ($this->upload->do_upload("pp_photo")) {
+                $applicant["pp_photo"] = $this->upload->data("file_name");
+                @unlink($this->upload->data("file_path") . "/" . $this->input->post("pp_photo_old"));
+            } else {
+                $applicant["pp_photo"] = $this->input->post("pp_photo_old");
+            }
+        }
+
+       
+		if(in_array("information-source", $form_sections)){
+			$information_source = @implode(",",$this->input->post("information_source"));
+			$applicant["information_source"]= $information_source;
+			$applicant["information_source_other"]=$this->input->post("information_source_other");
+
+		}
+
+		if(in_array("prev-academic-level", $form_sections)){
+			$applicant["prev_academic_level"]=$this->input->post("prev_academic_level");
+		}
+
+		if(in_array("umc/prev-academic-level", $form_sections)){
+			$applicant["prev_academic_level"]=$this->input->post("prev_academic_level");
+			$applicant["symbol_number"]=$this->input->post("symbol_number");
+			$applicant["score"]=$this->input->post("symbol_number");
+		}
+
+		if(in_array("expection-from-institution", $form_sections)){
+			$applicant["expectation"]=$this->input->post("expectation");
+		}
+
+		if(in_array("medical-records", $form_sections )){
+			$applicant["disease"]=$this->input->post("disease");
+			$applicant["health_problem"]=$this->input->post("health_problem");
+		}
+
+		if(in_array("contact-detail", $form_sections)){
+			$applicant["phone_number"]=$this->input->post("phone_number");
+			$applicant["mobile_number"]=$this->input->post("mobile_number");
+			$applicant["email_address"]=$this->input->post("email_address");
+		}
+
+		if(in_array("consent", $form_sections)){
+			$applicant["consent_signed"]=@$this->input->post("consent_signed")=="on"?1:0;
+		}	
+		
+        //$applicant["status"]=1;
+        $this->ApplicantsModel->update(array("id" => $application_id), $applicant);
+
+		//parent_guardain
+		if(in_array("umc/parent-guardian",$form_sections) || in_array("mbss/parent-guardian", $form_sections)){
+			foreach ($this->input->post("relation_id") as $key => $value) {
+				$relative_id = $value;
+				if ($relative_id) {
+					$relation["relation"] = $this->input->post("relation")[$key];
+					$relation["relative_name"] = $this->input->post("relative_name")[$key];
+					$relation["academic_qualification"] = $this->input->post("academic_qualification")[$key];
+					$relation["occupation"] = $this->input->post("occupation")[$key];
+					$this->Relatives->update(array("id" => $relative_id), $relation);
+				}
+			}
+		}
+
+		if(in_array("umc/education-history",$form_sections) || in_array("mbss/education-history", $form_sections)){
+			foreach ($this->input->post("subject_id") as $key => $value) {
+				$subject_id = $value;
+				if ($subject_id) {					
+					$academic_record["subject"]  = $this->input->post("subject")[$key];
+					$academic_record["score_prev_school"]  =$this->input->post("score_prev_school")[$key];				
+					$academic_record["outstanding_eca"]  =$this->input->post("outstanding_eca")[$key];
+					$this->AcademicRecords->update(array("id" => $subject_id), $academic_record);
+				}
+			}
+		}
+        
+    }
+
+    private function update_status($id, $status)
+    {
+        $criteria = array("id" => $id, "institution_id" => $this->session->userdata("tenant")->id);
+        $data = array("status" => $status);
+        $this->ApplicantsModel->update($criteria, $data);
+        $response = array("success" => 1, "title" => $this->status[$status - 1], "message" => "Record " . $this->status[$status - 1] . " successfully.");
+        return $response;
+
+    }
+
+    private function delete_records($id)
+    {
+        $criteria = array("id" => $id, "institution_id" => $this->session->userdata("tenant")->id);
+        $this->ApplicantsModel->delete($criteria);
+        $this->Relatives->delete($criteria);
+        $response = array("success" => 1, "title" => "Deleted", "message" => "Record deleted successfully.");
+        return $response;
+    }
+
+}
